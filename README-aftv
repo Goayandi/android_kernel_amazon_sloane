@@ -1,0 +1,32 @@
+=== ABBREVIATED KERNEL COMPILE GUIDE ===
+
+
+1. Download the AArch64 compiler
+
+http://developer.android.com/ndk/downloads
+
+
+2. Setup the build environment
+
+$ export PATH=<path_to_ndk>/toolchains/aarch64-linux-android-4.9/prebuilt/linux-x86_64/bin:$PATH
+
+
+3. Create the kernel config
+
+$ make ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- mt8173_sloane_defconfig
+
+
+4. Build the kernel
+
+$ make ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- -j<num_cores>
+
+
+5. Copy the kernel
+
+$ cp arch/arm64/boot/Image <target_dir>/
+
+
+6. Clean kernel sources (optional)
+
+$ make ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- mrproper
+

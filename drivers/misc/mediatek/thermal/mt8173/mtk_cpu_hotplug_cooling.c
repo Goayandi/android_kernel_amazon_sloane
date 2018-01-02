@@ -1,0 +1,163 @@
+/*
+ * mtk_cpu_hotplug_cooling.c - MTK cpu_hotplug works as cooling device.
+ *
+ * Copyright (C) 2015 Amazon, Inc.  All rights reserved.
+ *
+ * Author: Akwasi Boateng <boatenga@amazon.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ */
+
+#include <linux/cpumask.h>
+#include <linux/err.h>
+#include <linux/module.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
+#include <linux/slab.h>
+#include <linux/cpu_hotplug_cooling.h>
+#include <linux/device.h>
+#include <linux/thermal.h>
+#include <thermal_core.h>
+
+static struct thermal_cooling_device *cdev[NR_CPUS];
+
+static ssize_t levels_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct thermal_cooling_device *cdev = container_of(dev, struct thermal_cooling_device, device);
+	struct thermal_instance *instance;
+	int offset = 0;
+
+	mutex_lock(&cdev->lock);
+	list_for_each_entry(instance, &cdev->thermal_instances, cdev_node) {
+		offset += sprintf(buf + offset,
+				  "state=%d upper=%ld lower=%ld\n",
+				  instance->trip, instance->upper,
+				  instance->lower);
+	}
+	mutex_unlock(&cdev->lock);
+	return offset;
+}
+
+static ssize_t levels_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct thermal_cooling_device *cdev = container_of(dev, struct thermal_cooling_device, device);
+	struct thermal_instance *instance;
+	struct thermal_instance *prev_instance = NULL;
+	unsigned int trip, prev_trip, state;
+
+	if (!cdev)
+		return -EINVAL;
+	if (sscanf(buf, "%d %d\n", &trip, &state) != 2)
+		return -EINVAL;
+	if (trip >= THERMAL_MAX_TRIPS)
+		return -EINVAL;
+	if ((state < 0) || (state > 1))
+		return -EINVAL;
+	prev_trip = trip ? trip-1 : trip;
+	mutex_lock(&cdev->lock);
+	list_for_each_entry(instance, &cdev->thermal_instances, cdev_node) {
+		if (instance->trip == prev_trip)
+			prev_instance = instance;
+		if (instance->trip != trip)
+			continue;
+		instance->upper = state;
+		if (trip == 0)
+			instance->lower = 0;
+		else {
+			instance->lower = instance->upper ? prev_instance->upper : instance->upper;
+			if (instance->lower > instance->upper)
+				instance->lower = instance->upper;
+		}
+	}
+	mutex_unlock(&cdev->lock);
+	return count;
+}
+
+static DEVICE_ATTR(levels, S_IRUGO | S_IWUSR, levels_show, levels_store);
+
+static int mtk_cpu_hotplug_cooling_probe(struct platform_device *pdev)
+{
+	int i;
+	int nr_cpus = num_possible_cpus();
+
+	for (i = 1; i < nr_cpus; i++) {
+		cdev[i] = cpu_hotplug_cooling_register(i);
+
+		if (IS_ERR(cdev[i])) {
+			dev_err(&pdev->dev, "Failed to register cooling device\n");
+			return PTR_ERR(cdev[i]);
+		}
+	}
+
+	platform_set_drvdata(pdev, cdev);
+
+	for (i = 1; i < nr_cpus; i++) {
+		device_create_file(&cdev[i]->device, &dev_attr_levels);
+		dev_info(&pdev->dev, "Cooling device registered: %s\n",	cdev[i]->type);
+	}
+
+	return 0;
+}
+
+static int mtk_cpu_hotplug_cooling_remove(struct platform_device *pdev)
+{
+	int i;
+	struct thermal_cooling_device **cdev = platform_get_drvdata(pdev);
+	int nr_cpus = num_possible_cpus();
+
+	for (i = 1; i < nr_cpus; i++)
+		cpu_hotplug_cooling_unregister(cdev[i]);
+
+	return 0;
+}
+
+static struct platform_driver mtk_cpu_hotplug_cooling_driver = {
+	.driver = {
+		.owner = THIS_MODULE,
+		.name = "mtk-cpu-hotplug-cooling",
+	},
+	.probe = mtk_cpu_hotplug_cooling_probe,
+	.remove = mtk_cpu_hotplug_cooling_remove,
+};
+
+static struct platform_device mtk_cpu_hotplug_cooling_device = {
+	.name = "mtk-cpu-hotplug-cooling",
+	.id = -1,
+};
+
+static int __init mtk_cpu_hotplug_cooling_init(void)
+{
+	int ret;
+	ret = platform_driver_register(&mtk_cpu_hotplug_cooling_driver);
+	if (ret) {
+		pr_err("Unable to register MTK cpu_hotplug cooling driver (%d)\n", ret);
+		return ret;
+	}
+	ret = platform_device_register(&mtk_cpu_hotplug_cooling_device);
+	if (ret) {
+		pr_err("Unable to register MTK cpu_hotplug cooling device (%d)\n", ret);
+		return ret;
+	}
+	return 0;
+}
+
+static void __exit mtk_cpu_hotplug_cooling_exit(void)
+{
+	platform_driver_unregister(&mtk_cpu_hotplug_cooling_driver);
+	platform_device_unregister(&mtk_cpu_hotplug_cooling_device);
+}
+
+module_init(mtk_cpu_hotplug_cooling_init);
+module_exit(mtk_cpu_hotplug_cooling_exit);
+
+MODULE_AUTHOR("Akwasi Boateng <boatenga@amazon.com>");
+MODULE_DESCRIPTION("MTK cpu_hotplug cooling driver");
+MODULE_LICENSE("GPL");
